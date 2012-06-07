@@ -1,0 +1,18 @@
+ Hi there!
+
+ It is a sample robot intended to help me get a (Perl) job (minor aim is to gain some practice). It's just a silly experement, some practical self-inspired task and nothing more. Please don't treat it very serious.
+
+ To run it you need network access + installed Perl modules: 
+
+   LWP::Simple
+   YAML::Simple
+   MIME::Lite
+
+ Also support for features - /state say/ is required, but can be easly avoided.
+
+ Command line parameters:
+
+ your_shell> jpl.pl <mailbox username> <mailbox password>
+
+ Enjoy it (if you still able to enjoy)!
+
