@@ -1,5 +1,5 @@
 #!/bin/env perl -w
-# 
+#
 # Tiny-Silly robot for job applying
 #
 # 2012. Copyleft. Alex Karev
@@ -12,7 +12,7 @@ Jobs hash used within the robot has same keys as jobs.perl.org/job/#num# fields 
  firm_id,
  should_apply
 
-=cut 
+=cut
 
 use strict;
 use warnings;
@@ -25,7 +25,7 @@ use feature qw/
 	state
 /;
 
-use constant IS_DBG_MODE => 1;
+use constant IS_DBG_MODE => 0;
 
 sub dbg(&)
 {
@@ -58,17 +58,27 @@ use constant BLOCK_COUNTRIES => qw/
 	Indanesia
 	China
 	Taiwan
+	Afghanistan
+	Aphganistan
 	Afganistan
 	Iran
+	Brasilia
 	Brasil
 	Columbia
 	Venezuela
 	Mexica
 	Philippines
+	Azerbaijan
 	Azerbajan
 /;
 
-my @block_countries = map { tr/_/ /; $_ } BLOCK_COUNTRIES;
+my @block_countries = map {my $a = $_; $a =~ tr/_/ /; $a } BLOCK_COUNTRIES;
+
+use constant STRANGE_DESC => qw/
+   specifics_of_the_logic
+/;
+
+my @strange_desc = map {local $a = $_;  $a =~ tr/_/ /; $a } STRANGE_DESC;
 
 # Query parameters
 # default for 'Telecommute' => 'yes'
@@ -81,7 +91,7 @@ my $job_fields_re = qr|<a name="(\w+)"></a>.+? valign=top>\s+(.+?)\s+</td>|ms;
 
 
 sub query($$$)
-{	
+{
 	my ($kw, $lc, $ost) = @_;
 
 	# get jobs list
@@ -137,6 +147,10 @@ sub filter(\%)
 		return 0 if (exists $job->{country} and $job->{country} =~ /$_/i);
 	}
 
+	for (@strange_desc) {
+		return 0 if ($job->{description} =~ /$_/i);
+	}
+
 	# Update to do find 'local desirable' in more smart manner
 	return 0 if ($job->{description} =~ /local/);
 
@@ -151,7 +165,7 @@ sub get_job_records($)
 	#state $num = 0;
 	for my $rc (@$rows) {
 		my %j = @{ getjob($rc) };
-		
+
 		if (::IS_DBG_MODE) {
 			print_job_desc %j;
 			#exit 1;
@@ -172,33 +186,26 @@ sub request_jobs()
 	get_job_records( query( $kwrds, $locs, $offst) );
 }
 
+
 package JobsPostMan;
-use MIME::Lite;
+require %ENV{MM_SCRIPTS} . '/auth.pm';
+requite %ENV{MM_SCRIPTS} . '/poster.pm';
 
-sub send_letter(\%$)
+sub send_letter(\%S)
 {
-	my ($j,$m) = (shift, shift);
+  my $j   = shift;
+  my $msg = shift;
 
-	say $m;
+  return 0 unless $j->{contact};
 
-	my $msg = MIME::Lite->new(
-		#From    => 'journeyman@benderlogov.net',
-		From    => 'jobber1310@mail.ru',
-		To      => 'akaagun@ymail.com',
-		Subject => '[looking for a job] ' . $j->{title},
-		Data    => $j->{contact} . "\n\n" . $m
-	);
+  my $k = Gate::prepare_key();
 
-	return 0;
-
-	# Sending auth info on command line is generally a bad idea but for this script it is ok
-	$msg->send('smtp', 'smtp.mail.ru', AuthUser => $ARGV[0], AuthPass => $ARGV[1] ) or
-		die "Failed to send mail, stopped";
-
-	1;
+  return Poster::post( $k, $j->{contact}, $msg );
 }
 
+
 package JobsStore;
+
 use DBIx::Simple;
 use YAML::Tiny;
 use Data::Dumper;
@@ -209,16 +216,17 @@ use constant {
 };
 
 
-state $config = ''; 
+state $config = '';
 {
 	local $/ = 0, $config = <::DATA>;
 }
 
 # Loading configuration
 my $yml = YAML::Tiny::Load($config) or die "Failed to parse config, stopped";
-say $yml->{msg};
-$yml->{msg} =~ s/\n/\n\n/g;
-say $yml->{msg} and exit 0;
+# say $yml->{msg};
+
+# Message body text format
+$yml->{msg_jpl} =~ s/\n/\n\n/g;
 
 sub connect($$)
 {
@@ -259,12 +267,12 @@ sub create_schema($$)
 	$db->commit;
 	$db->disconnect;
 }
-	
-	
-sub parse_fields(\%) 
+
+
+sub parse_fields(\%)
 {
 	my $j = shift;
-	
+
 	::dbg { say "CONTACT_SRC: [$j->{contact}]"; };
 
 	$j->{website} =~ s|^[^>]+>([A-Za-z0-9\.]+)</a>|$1|   if defined $j->{website};
@@ -275,7 +283,7 @@ sub parse_fields(\%)
 	if ($j->{contact} !~ s|.*?([\w.+-]+\@[\w]+\.[[:alpha:]]{2,8}).*|$1|ms) {
 		# store old value for investigation
 		$j->{raw_contact} = $j->{contact};
-		say "Faulty Contact: $j->{contact}";
+		# say "Faulty Contact: $j->{contact}";
 
 		# Apply various filters to correct smart? mail address representation
                 # 1. : jobs (at) journatic (dot) com<br>
@@ -287,8 +295,9 @@ sub parse_fields(\%)
 		}
 	}
 
+	$j->{company_name} = $j->{contact} if ( not $j->{company_name});
 
-	::dbg { say 'CONTACT_DST: [' . ($j->{contact} ? $j->{contact} : '-') . ']' };
+	::dbg { say "company: $j->{company_name}"; say 'CONTACT_DST: [' . ($j->{contact} ? $j->{contact} : '-') . ']' };
 }
 
 sub store_job(\%)
@@ -313,18 +322,19 @@ sub store_job(\%)
 	$db->query('insert into firm values(??)',
 		undef,
 		$j->{company_name },
-		$j->{country      }, 
+		$j->{country      },
 		$j->{location     },
 		$j->{website      } ) or die "Failed to store firm information";
 
-	($id) = $db->query('select last_insert_rowid()')->list or die "Can't get last inser rowid, stopped";
+	($id) = $db->query('select last_insert_rowid()')->list or die "Can't get last insert rowid, stopped";
 
 SAVE_OFFER:
-	# say "Last id = $id";
+	#say "Last firm_id = $id, posted_on => $j->{posted_on}, title => $j->{title}";
+
 	# Check if offer already exist?
-	my $offers_res = $db->query('select title, posted_on, applyed from offer where ' .
+	my $offers_res = $db->query('select title, posted_on, applied, id from offer where ' .
 			'firm_id    = ? and '   .
-	            	'posted_on  = ? and '   .
+           	'posted_on  = ? and '   .
 			'title      = ?',
 			$id,
 			$j->{posted_on},
@@ -334,24 +344,28 @@ SAVE_OFFER:
 
 	die "Abnormal offers quantity, stopped" if (@offers > 1);
 	if (@offers == 1) {
-		$j->{should_apply} = !$offers[0]->{applyed};
+     	# say "Title: $offers[0]->{title}, applied: $offers[0]->{applied}";
+		$j->{offer_id    } =  $offers[0]->{id};
+		$j->{should_apply} = !$offers[0]->{applied};
 		goto OUT;
 	}
 
 	# No offer record written yet, store it
 	$db->query('insert into offer values(??)',
 		undef,
-		$id, 
+		$id,
 		$j->{jpl_id          },
-		$j->{title           }, 
+		$j->{title           },
 		$j->{contact         },
 		$j->{raw_contact     },
 		$j->{description     },
-		$j->{skills_required }, 
+		$j->{skills_required },
 		$j->{posted_on       },
 		0, '' ) or die "Failed to store offer onfo, stopped";
 
 	$db->query('select last_insert_rowid()')->into( $j->{offer_id} ) or die "Failed to fetch offer rowid, stopped";
+	# say "Get offer id => $j->{offer_id}";
+
 	$j->{firm_id}      = $id;
 	$j->{should_apply} = 1;
 OUT:
@@ -374,15 +388,17 @@ sub make_send_list($)
 	\@apply_list;
 }
 
-sub mark_applyed(\%)
+sub mark_applied(\%)
 {
 	my $j = shift;
 
 	my $db = __PACKAGE__->connect(DBPATH, DBNAME);
 
-	$db->query(q|update offer set applyed = 'true' and apply_date = date() where id = ?|, $j->{offer_id} ) or
-		die "Failed to update applyed offer entry, stopped";
+	# say "Updating id => $j->{offer_id}";
+	$db->query(q|update offer set applied = 1, apply_date = date() where id = ?|, $j->{offer_id} ) or
+		die "Failed to update applied offer entry, stopped";
 
+	$db->commit;
 	$db->disconnect;
 }
 
@@ -393,12 +409,13 @@ sub apply($)
 	die "Message body not defined in config, stopped" if (! $yml->{msg});
 
 	for my $j (@$jarr) {
-		
 		::dbg {
-			say "Applying to $j->{company_name} as $j->{title}, contact: $j->{contact}";
+			say "Applying to $j->{company_name}";
+			say "  as       $j->{title}";
+			say "  contact  $j->{contact}";
 		};
 
-		mark_applyed(%$j) if JobsPostMan::send_letter(%$j, $yml->{msg});
+		mark_applied(%$j) if JobsPostMan::send_letter(%$j, $yml->{msg});
 	}
 }
 
@@ -415,17 +432,18 @@ sub main()
 
 main();
 
-
 __DATA__
 ---
 schema:
  - >
    create table if not exists firm (
-     id           integer primary key,
-     company_name char(64) unique,
-     country      char(128),
-     location     char(128),
-     website      char(64)
+     id              integer primary key,
+     company_name    char(64) unique,
+     country         char(128),
+     location        char(128),
+     website         char(64),
+     ignore          bool default false,
+     num_of_declines integer
    );
  - >
    create table if not exists offer (
@@ -438,30 +456,20 @@ schema:
      description     text,
      skills_required text,
      posted_on       char(32),
-     applyed         bool default false,
+     applied         bool default false,
      apply_date      integer default null,
      unique (firm_id,title,posted_on)
    );
-msg: |
-
-	Greetings Human Beings!
-
-	I'm tinny-silly robot which is on 'seems to never-end' quest of seeking nice (may be even telecommute) work for one very modest person I don't know very well, but which seems a nice Creature for my tiny mind opinion.
-
-	He has significant skills in C/C++, some knowledge of distributed computing and interest in machine learning and neural networks design. But now he is seeking grail of wisdom at the Perl domain and I hope you'll help him in his mission. If you are willing to find out more, look at his profile: 
-
-		http://linkedin.com/in/akarev
-	
-	Resume (+some certificates and recommendations) in PDF:
-
-		http://www.box.com/shared/96d65cc39f086f10e6f2
-	
-	My body internals were published at:
-
-		
-	
-	They are fleshed upon Perl, so you can think of it as 'code sample', but don't stare at me for too long, I don't like it! And note that my creator just starts to gain enlightenment at Perl wisdom.
-	
-	As I mentioned my protege has very modest abilities so I'll offer him for you at modest rate starting at: $23/hour, but trade is acceptable. Feel free to ignore this message, but note that you may loose something in your life that your concurrents can acquire.
-	
-	Good luck in your struggle against complicity, beloved Humans.
+msg_jpl: |
+  Greetings Human Beings!
+  I'm tinny-silly robot which is on 'seems to never-end' quest of seeking nice (may be even telecommute and for long term) work for one very modest person I don't know very well, but which seems a nice Creature for my tiny mind opinion. 
+  He has significant skills in C/C++, some knowledge of distributed computing and interest in machine learning and neural networks design. But now he is seeking grail of wisdom at the Perl domain and I hope you'll help him in his mission. If you are willing to find out more, look at his profile:
+      http://linkedin.com/in/akarev
+  Resume (+some certificates and recommendations) in PDF:
+      http://www.box.com/s/aj44mrjdtjmiabtbeedu
+  My body internals were published at:
+      http://github.com/karitra/Hound
+  They are fleshed upon Perl, so you can think of it as 'code sample', but don't stare at me for too long, I don't like it! And note that my creator just starts to gain enlightenment at Perl wisdom.
+  As I mentioned, my protege has very modest abilities so I'll offer him for you at a modest rate starting at: $22.34/hour (can be discussed).
+  Feel free to ignore this message, but note that you may loose something in your life that your concurrents can acquire.
+  Good luck in your struggle against complicity, beloved Humans!
