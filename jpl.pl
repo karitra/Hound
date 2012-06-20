@@ -231,7 +231,12 @@ use YAML::Tiny;
 use Data::Dumper;
 
 use Exporter 'import';
-our @EXPORT = qw/connect/;
+our @EXPORT = qw/
+				  connect
+				  create_schema
+				  apply
+				  make_send_list
+/;
 
 use constant {
 	DBPATH => 'jobs',
