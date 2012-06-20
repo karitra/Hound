@@ -1,4 +1,4 @@
-#!/bin/env perl -w
+#!/usr/bin/env perl
 #
 # Tiny-Silly robot for job applying
 #
@@ -18,6 +18,8 @@ use strict;
 use warnings;
 use utf8;
 
+use constant SCRIPT_VERSION => v0.2;
+
 map {binmode $_, ':utf8' }  (*STDOUT, *STDERR);
 
 use feature qw/
@@ -26,6 +28,12 @@ use feature qw/
 /;
 
 use constant IS_DBG_MODE => 0;
+use constant CRED_FILE   => '.dont.copy/cred';
+
+BEGIN {
+  # Needed by Postman module
+  $ENV{CRED_FILE} = CRED_FILE;
+}
 
 sub dbg(&)
 {
@@ -125,7 +133,7 @@ sub getjob($)
 	\@acc;
 }
 
-sub print_job_desc(\%) 
+sub print_job_desc(\%)
 {
 	my $job_ref = shift;
 
@@ -152,7 +160,7 @@ sub filter(\%)
 	}
 
 	# Update to do find 'local desirable' in more smart manner
-	return 0 if ($job->{description} =~ /local/);
+	return 0 if ($job->{description} =~ /local|LOCAL/);
 
 	return 1;
 }
@@ -161,6 +169,8 @@ sub get_job_records($)
 {
 	my $rows = shift;
 	my @jobs;
+
+	say "Requesting jobs list...";
 
 	#state $num = 0;
 	for my $rc (@$rows) {
@@ -188,19 +198,29 @@ sub request_jobs()
 
 
 package JobsPostMan;
-require %ENV{MM_SCRIPTS} . '/auth.pm';
-requite %ENV{MM_SCRIPTS} . '/poster.pm';
+use lib qw/scripts util/;
+use TinyUtil;
+Mailman->import; # never do this at home!
+use Postman;
+use Poster;
 
-sub send_letter(\%S)
+sub send_letter($\%$)
 {
-  my $j   = shift;
-  my $msg = shift;
+  my ($use_cgi, $j, $msg) = @_;
+
+  say "Can't understand contact information from [$j->{raw_contact}]" unless ($j->{contact});
 
   return 0 unless $j->{contact};
 
-  my $k = Gate::prepare_key();
-
-  return Poster::post( $k, $j->{contact}, $msg );
+  if ($use_cgi) {
+	# say "CGI";
+	return Poster::post_cgi( Gate::prepare_key(), 'jobber1310@mail.ru', '[need this job]' . $j->{contact}, $msg );
+  } else {
+	# say "Mail";
+	#return Postman::sendmail(undef, $j->{contact}, '[want this job] ' . $j->{title}, $msg);
+	#say "Want to send to $j->{contact}";
+	return Postman::send( undef, 'jobber1310@mail.ru', '[want to work with you] ' . $j->{contact} . ' ' .  $j->{title} , $msg);
+  }
 }
 
 
@@ -210,6 +230,9 @@ use DBIx::Simple;
 use YAML::Tiny;
 use Data::Dumper;
 
+use Exporter 'import';
+our @EXPORT = qw/connect/;
+
 use constant {
 	DBPATH => 'jobs',
 	DBNAME => 'jpl_offers.db'
@@ -218,19 +241,19 @@ use constant {
 
 state $config = '';
 {
-	local $/ = 0, $config = <::DATA>;
+	local $/;
+	$config = <main::DATA>;
 }
 
 # Loading configuration
-my $yml = YAML::Tiny::Load($config) or die "Failed to parse config, stopped";
+our $yml;
 # say $yml->{msg};
 
 # Message body text format
-$yml->{msg_jpl} =~ s/\n/\n\n/g;
 
 sub connect($$)
 {
-	my ($self, $path, $dbname) = @_;
+	my (undef, $path, $dbname) = @_;
 
 	# TODO: rewrite as 'state' variable?
 	my $db =  DBIx::Simple->new("dbi:SQLite:dbname=$path/$dbname", "", "", 
@@ -240,7 +263,7 @@ sub connect($$)
 			# sqlite_allow_multiple_statements => 1
 		} ) or die DBIx::Simple->error;
 
-	if (not $db->{pragmas_set}) {
+	unless ($db->{pragmas_set}) {
 		$db->query("PRAGMA foreign_keys = ON");
 		$db->{pragmas_set} = 1;
 	}
@@ -248,9 +271,11 @@ sub connect($$)
 	return $db;
 }
 
-sub create_schema($$) 
+sub create_schema($$)
 {
 	my ($path, $name) = @_;
+
+	say "(Re)creating schema...";
 
 	die "Error in schema defenition!" if (not defined $yml->{schema});
 
@@ -288,14 +313,27 @@ sub parse_fields(\%)
 		# Apply various filters to correct smart? mail address representation
                 # 1. : jobs (at) journatic (dot) com<br>
 		if ($j->{contact} !~ s|.*?(\w+ \s* \(at\) \s* \w+ \s* \(dot\) \s* \w+).*|$1|sx) {
+			#undef $j->{contact};
+
+		  if ($j->{contact} =~ s|.*?(\w+ \s* AT \s* \w+ \s* DOT \s* \w+).*|$1|isx) {
+			# say "contact: $j->{contact}";
+			my %rep = (dot => '.', DOT => '.', at => '@',  AT => '@',' ' => '');
+
+			if ($j->{contact} !~ s/(dot|DOT|at|AT|\s)/$rep{$1}/gs) {
+			  undef $j->{contact};
+			}
+
+		  } else {
 			undef $j->{contact};
+		  }
+
 		} else {
 			my %rep = ('(dot)' => '.', '(at)' => '@',  ' ' => '');
-			$j->{contact} =~ s/(\(dot\)|\(at\)|\s)/$rep{$1}/gs;
+			$j->{contact} =~ s/(\(dot\)|\(at\)|\s)/$rep{$1}/igs;
 		}
 	}
 
-	$j->{company_name} = $j->{contact} if ( not $j->{company_name});
+	$j->{company_name} = $j->{contact} unless ( $j->{company_name});
 
 	::dbg { say "company: $j->{company_name}"; say 'CONTACT_DST: [' . ($j->{contact} ? $j->{contact} : '-') . ']' };
 }
@@ -303,28 +341,32 @@ sub parse_fields(\%)
 sub store_job(\%)
 {
 	my $j = shift;
-	my $id = -1;
+
+	my $id            = -1;
+	my $should_ignore =  0;
 
 	my $db = __PACKAGE__->connect(DBPATH, DBNAME);
 
-	my $firm_query = $db->query('select id from firm where company_name like ?', $j->{company_name})
+	# Note: may be memory consuming, but should be ok for this application
+	my $r = $db->query('select id, ignore from firm where company_name like ?', $j->{company_name})
 		or die "Failed to store job description";
 
-	my @ra = $firm_query->flat;
+	my @ra = $r->hashes;
+
 	if (@ra == 1) {
-		($id) = @ra;
-		goto SAVE_OFFER;
+	  $id            = $ra[0]->{id};
+	  $should_ignore = $ra[0]->{ignore};
+	  goto SAVE_OFFER;
 	}
 
 	die "Logical database error: must be on firm record" if (@ra > 1);
 
 	# All clear: should store firm information
-	$db->query('insert into firm values(??)',
-		undef,
-		$j->{company_name },
-		$j->{country      },
-		$j->{location     },
-		$j->{website      } ) or die "Failed to store firm information";
+	$db->query('insert into firm(company_name, country, location, website) values(??)',
+			   $j->{company_name },
+			   $j->{country      },
+			   $j->{location     },
+			   $j->{website      } ) or die "Failed to store firm information";
 
 	($id) = $db->query('select last_insert_rowid()')->list or die "Can't get last insert rowid, stopped";
 
@@ -332,13 +374,13 @@ SAVE_OFFER:
 	#say "Last firm_id = $id, posted_on => $j->{posted_on}, title => $j->{title}";
 
 	# Check if offer already exist?
-	my $offers_res = $db->query('select title, posted_on, applied, id from offer where ' .
-			'firm_id    = ? and '   .
-           	'posted_on  = ? and '   .
-			'title      = ?',
-			$id,
-			$j->{posted_on},
-			$j->{title    } ) or die "Can't fetch offers record, stopped";
+	my $offers_res = $db->query( 'select title, posted_on, applied, id from offer where ' .
+								 'firm_id    = ? and '   .
+								 'posted_on  = ? and '   .
+								 'title      = ?',
+								 $id,
+								 $j->{posted_on},
+								 $j->{title    } ) or die "Can't fetch offers record, stopped";
 
 	my @offers = $offers_res->hashes;
 
@@ -369,6 +411,11 @@ SAVE_OFFER:
 	$j->{firm_id}      = $id;
 	$j->{should_apply} = 1;
 OUT:
+
+	$j->{should_apply} = ($should_ignore eq 'false' or $should_ignore == 0) ? $j->{should_apply} : 0;
+
+	# say "Apply for [$j->{title}]? Should apply: $j->{should_apply}, should ignore: $should_ignore";
+
 	$db->commit;
 	$db->disconnect;
 }
@@ -378,12 +425,16 @@ sub make_send_list($)
 	my $jobs = shift;
 	my @apply_list;
 
+	say q/Preparing 'apply' list.../;
+
 	for (@$jobs) {
 		# Note: Parse website and contat info
 		parse_fields %$_;
 		store_job %$_;
 		push @apply_list, $_ if $_->{should_apply};
 	}
+
+	# die "In apply list: ", scalar @apply_list;
 
 	\@apply_list;
 }
@@ -406,16 +457,19 @@ sub apply($)
 {
 	my $jarr = shift;
 
-	die "Message body not defined in config, stopped" if (! $yml->{msg});
+	say 'Applying for ', scalar @$jarr, ' offers';
+
+	die "Message body not defined in config, stopped" unless $yml->{msg_jpl};
 
 	for my $j (@$jarr) {
+
 		::dbg {
 			say "Applying to $j->{company_name}";
 			say "  as       $j->{title}";
 			say "  contact  $j->{contact}";
 		};
 
-		mark_applied(%$j) if JobsPostMan::send_letter(%$j, $yml->{msg});
+		mark_applied(%$j) if JobsPostMan::send_letter(0, %$j, $yml->{msg_jpl});
 	}
 }
 
@@ -423,10 +477,15 @@ package main;
 
 sub main()
 {
-	# dbg { say "Lets start!" };
+  # dbg { say "Lets start!" };
 
-	JobsStore::create_schema(JobsStore::DBPATH, JobsStore::DBNAME);
-        JobsStore::apply( JobsStore::make_send_list( JPL::request_jobs() ) );
+  # 1. Load config first
+  $yml            = YAML::Tiny::Load($config) or die "Failed to parse config, stopped";
+  $yml->{msg_jpl} =~ s/\n/\n\n/g;
+
+  # 2. Do the job ;)
+  JobsStore::create_schema(JobsStore::DBPATH, JobsStore::DBNAME);
+  JobsStore::apply( JobsStore::make_send_list( JPL::request_jobs() ) );
 }
 
 
@@ -443,7 +502,7 @@ schema:
      location        char(128),
      website         char(64),
      ignore          bool default false,
-     num_of_declines integer
+     num_of_declines integer default 0
    );
  - >
    create table if not exists offer (
@@ -462,7 +521,7 @@ schema:
    );
 msg_jpl: |
   Greetings Human Beings!
-  I'm tinny-silly robot which is on 'seems to never-end' quest of seeking nice (may be even telecommute and for long term) work for one very modest person I don't know very well, but which seems a nice Creature for my tiny mind opinion. 
+  I'm tinny-silly robot which is on 'seems to never-end' quest of seeking nice (may be even telecommute and for long term) work for one very modest person I don't know very well, but which seems a nice critter for my tiny mind opinion.
   He has significant skills in C/C++, some knowledge of distributed computing and interest in machine learning and neural networks design. But now he is seeking grail of wisdom at the Perl domain and I hope you'll help him in his mission. If you are willing to find out more, look at his profile:
       http://linkedin.com/in/akarev
   Resume (+some certificates and recommendations) in PDF:
@@ -470,6 +529,8 @@ msg_jpl: |
   My body internals were published at:
       http://github.com/karitra/Hound
   They are fleshed upon Perl, so you can think of it as 'code sample', but don't stare at me for too long, I don't like it! And note that my creator just starts to gain enlightenment at Perl wisdom.
-  As I mentioned, my protege has very modest abilities so I'll offer him for you at a modest rate starting at: $22.34/hour (can be discussed).
+  As I mentioned, my protege has very modest abilities so I'll offer him for you at a modest rate starting at: $19.95/hour (can be discussed).
   Feel free to ignore this message, but note that you may loose something in your life that your concurrents can acquire.
   Good luck in your struggle against complicity, beloved Humans!
+
+
