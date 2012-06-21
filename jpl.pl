@@ -18,7 +18,7 @@ use strict;
 use warnings;
 use utf8;
 
-use constant SCRIPT_VERSION => v0.2;
+use constant SCRIPT_VERSION => v0.3;
 
 map {binmode $_, ':utf8' }  (*STDOUT, *STDERR);
 
@@ -217,9 +217,11 @@ sub send_letter($\%$)
 	return Poster::post_cgi( Gate::prepare_key(), 'jobber1310@mail.ru', '[need this job]' . $j->{contact}, $msg );
   } else {
 	# say "Mail";
-	#return Postman::sendmail(undef, $j->{contact}, '[want this job] ' . $j->{title}, $msg);
-	#say "Want to send to $j->{contact}";
-	return Postman::send( undef, 'jobber1310@mail.ru', '[want to work with you] ' . $j->{contact} . ' ' .  $j->{title} , $msg);
+	# Deployment route
+	 return Postman::send( undef, $j->{contact}, '[want to work with you] ' . $j->{title} , $msg);
+
+	# Debug route
+	# return Postman::send( undef, 'jobber1310@mail.ru', '[want to work with you] ' . $j->{contact} . ' ' .  $j->{title} , $msg);
   }
 }
 
@@ -254,7 +256,19 @@ state $config = '';
 our $yml;
 # say $yml->{msg};
 
-# Message body text format
+sub prepare_yml()
+{
+  # 1. Load config first
+  my $y         =  YAML::Tiny::Load($config) or die "Failed to parse config, stopped";
+  $y->{msg_jpl} =~ s/\n/\n\n/g;
+
+  do $ENV{CRED_FILE} or die 'Failed to read post user parameters, stopped';
+
+  $y->{msg_jpl} =~ s/\$(\w+)\$/$Cfg::wrk_embedded_links{$1}/g;
+
+  $y;
+}
+
 
 sub connect($$)
 {
@@ -398,17 +412,23 @@ SAVE_OFFER:
 	}
 
 	# No offer record written yet, store it
-	$db->query('insert into offer values(??)',
-		undef,
+	$db->query('insert into offer(' .
+			   'firm_id, '.
+			   'jpl_id, '.
+			   'title, '.
+			   'contact, '.
+			   'raw_contact, '.
+			   'description, '.
+			   'skills_required,'.
+			   'posted_on) values(??)',
 		$id,
-		$j->{jpl_id          },
+		$j->{internal_reference},
 		$j->{title           },
 		$j->{contact         },
 		$j->{raw_contact     },
 		$j->{description     },
 		$j->{skills_required },
-		$j->{posted_on       },
-		0, '' ) or die "Failed to store offer onfo, stopped";
+		$j->{posted_on       } ) or die "Failed to store offer onfo, stopped";
 
 	$db->query('select last_insert_rowid()')->into( $j->{offer_id} ) or die "Failed to fetch offer rowid, stopped";
 	# say "Get offer id => $j->{offer_id}";
@@ -438,8 +458,6 @@ sub make_send_list($)
 		store_job %$_;
 		push @apply_list, $_ if $_->{should_apply};
 	}
-
-	# die "In apply list: ", scalar @apply_list;
 
 	\@apply_list;
 }
@@ -474,7 +492,7 @@ sub apply($)
 			say "  contact  $j->{contact}";
 		};
 
-		mark_applied(%$j) if JobsPostMan::send_letter(0, %$j, $yml->{msg_jpl});
+		mark_applied(%$j) if JobsPostMan::send_letter(0, %$j, $yml->{msg_jpl} . "\n[id: $j->{firm_id}.$j->{offer_id}]" );
 	}
 }
 
@@ -484,9 +502,8 @@ sub main()
 {
   # dbg { say "Lets start!" };
 
-  # 1. Load config first
-  $yml            = YAML::Tiny::Load($config) or die "Failed to parse config, stopped";
-  $yml->{msg_jpl} =~ s/\n/\n\n/g;
+  # 1. Prepare YAML config
+  $yml = JobsStore->prepare_yml;
 
   # 2. Do the job ;)
   JobsStore::create_schema(JobsStore::DBPATH, JobsStore::DBNAME);
@@ -522,20 +539,33 @@ schema:
      posted_on       char(32),
      applied         bool default false,
      apply_date      integer default null,
+     response        bool default false,
      unique (firm_id,title,posted_on)
    );
 msg_jpl: |
   Greetings Human Beings!
   I'm tinny-silly robot which is on 'seems to never-end' quest of seeking nice (may be even telecommute and for long term) work for one very modest person I don't know very well, but which seems a nice critter for my tiny mind opinion.
   He has significant skills in C/C++, some knowledge of distributed computing and interest in machine learning and neural networks design. But now he is seeking grail of wisdom at the Perl domain and I hope you'll help him in his mission. If you are willing to find out more, look at his profile:
-      http://linkedin.com/in/akarev
+      $linked_profile$
   Resume (+some certificates and recommendations) in PDF:
-      http://www.box.com/s/aj44mrjdtjmiabtbeedu
+      $resume_download$
   My body internals were published at:
-      http://github.com/karitra/Hound
+      $github$
   They are fleshed upon Perl, so you can think of it as 'code sample', but don't stare at me for too long, I don't like it! And note that my creator just starts to gain enlightenment at Perl wisdom.
-  As I mentioned, my protege has very modest abilities so I'll offer him for you at a modest rate starting at: $19.95/hour (can be discussed).
+  As I mentioned, my protege has very modest abilities so I'll offer him for you at a modest rate starting at: $22.59/hour (can be discussed).
   Feel free to ignore this message, but note that you may loose something in your life that your concurrents can acquire.
   Good luck in your struggle against complicity, beloved Humans!
-
+msg_jpl_ru: |
+  Приветствую вас, Люди!
+  Я робот. Маленький, глупенький робот. Меня создавали в минуты отчаянного безделья, длинными весенними вечерами в свободное от бадминтона и от сопровождения сайтов о грибах и Тамерлане время, для очень важной и, повидимому, невыполнимой миссии - найти работу (желательно удаленную) для одного очень хорошего, но очень скромного человеческого организма. Но сейчас речь не обо мне, а об упомянутом организме.
+  У него есть значительный опыт работы с Си/Си++, некоторое знание о распределенных приложениях и мизерное увлечение тем, что именуется Machine Learning и Нейронные Сети. Сейчас он находится в поисках грааля мудрости в обители Адептов Perl (это я про perlmonks). Есть у него некоторое знание Явы, динамических и функциональных языков. Подробнее о нём можно узнать тут:
+    $linked_profile$
+  Инструкия от него (+несколько страниц гарантии) в PDF:
+    $resume_download$
+  С моей начинкой можно ознакоимться тут:
+      $github$
+  Я наращивал свой жирок с помощью Perl, так что мои 'внутренности' можно расценить как 'пример кода', но не нужно на меня таращиться слишком долго, это меня смущает. И учтите что субъект, создавший меня, только вступил на путь обретения просветления в Perl'овой мудрости.
+  Как я упоминал, мой 'протеже' имеет очень скромные возможности, поэтому я могу предложить его вам за очень скромное вознограждение начиная от $20/час (но рейт можно обсудить).
+  Вы можете проигнорировать это сообщение, но не забывайте, что вы можете пропустить что-то в своей деятельности, что ваши конкуренты могут приобрести.
+  До скорых встреч, любимые мои Человеки!
 
